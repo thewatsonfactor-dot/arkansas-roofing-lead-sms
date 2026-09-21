@@ -1,146 +1,134 @@
 // Arkansas Local Roofing — Telnyx Lead SMS Notifier
 // Vercel Serverless Function — /api/lead
-// Receives Telnyx AI Insights webhook → texts lead summary to Chris via Telnyx SMS
+//
+// Flow: caller → Alex (Telnyx AI assistant) → call ends → Telnyx runs the
+// "Arkansas Roofing Lead Capture" insight → webhook `call.conversation_insights.generated`
+// hits this function → we look up the caller's number → text the lead to Chris.
+//
+// Env vars (Vercel → Settings → Environment Variables):
+//   TELNYX_API_KEY   Telnyx API key (used for SMS + caller lookup)
+//   FROM_NUMBER      +15012329111  (must be 10DLC / toll-free registered to deliver)
+//   CHRIS_NUMBER     +15013525737
+//   ALLOWED_CONNECTION_ID (optional) 3054032437311964478 — ignore events from other apps
+
+const TELNYX = "https://api.telnyx.com/v2";
 
 export default async function handler(req, res) {
-  // Health check
   if (req.method === "GET") {
     return res.status(200).send("Arkansas Local Roofing — Lead SMS active ✅");
   }
-
   if (req.method !== "POST") {
     return res.status(405).send("Method not allowed");
   }
 
-  // Log raw payload to Vercel console for debugging
-  console.log("Telnyx webhook received:", JSON.stringify(req.body).slice(0, 500));
+  const body = req.body || {};
+  const eventType = body?.data?.event_type || body?.event_type || (body?.CallStatus ? `texml.${body.CallStatus}` : "unknown");
+  console.log("Webhook received:", eventType, JSON.stringify(body).slice(0, 1500));
 
-  // Parse lead info from Telnyx payload
-  const { callerNumber, summary } = parseLeadSummary(req.body);
-
-  // Build SMS text
-  const smsText =
-`🏠 NEW ROOFING LEAD
-Caller: ${callerNumber}
-
-${summary}
-
-— Arkansas Local Roofing AI`;
-
-  // Send SMS via Telnyx, then respond 200 to Telnyx
   try {
-    await sendSMS(
-      process.env.CHRIS_NUMBER,
-      process.env.FROM_NUMBER,
-      smsText
-    );
-    console.log("SMS sent to Chris for caller:", callerNumber);
-  } catch (err) {
-    console.error("SMS error:", err);
-  }
-
-  // Always return 200 so Telnyx doesn't retry
-  return res.status(200).end();
-}
-
-// ─── Telnyx SMS API ───────────────────────────────────────────────────────────
-async function sendSMS(to, from, text) {
-  const response = await fetch("https://api.telnyx.com/v2/messages", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.TELNYX_API_KEY}`,
-      "Content-Type":  "application/json"
-    },
-    body: JSON.stringify({ from, to, text })
-  });
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Telnyx SMS failed (${response.status}): ${err}`);
-  }
-  return response.json();
-}
-
-// ─── Parse Telnyx Insights Webhook Payload ──────────────────────────────
-// Handles three formats:
-//   1. Telnyx AI Insights webhook (primary — fires after call ends with AI summary)
-//   2. Telnyx TeXML status_callback (fires on call state changes)
-//   3. Legacy / generic fallback
-function parseLeadSummary(payload) {
-  try {
-    // ── Format 1: Telnyx AI Insights webhook ─────────────────────────────
-    // { event_type: "ai.insight.created", data: { insights: [...], conversation: {...} } }
-    const insightData = payload?.data || payload;
-    const insights = insightData?.insights;
-
-    if (Array.isArray(insights) && insights.length > 0) {
-      // Caller number from conversation metadata
-      const callerNumber =
-        insightData?.conversation?.from ||
-        insightData?.conversation?.caller_id ||
-        insightData?.from ||
-        payload?.from ||
-        "Unknown";
-
-      // Find the Summary insight (what the AI generated)
-      const summaryInsight = insights.find(
-        (i) =>
-          (i.name || "").toLowerCase().includes("summary") ||
-          (i.type || "").toLowerCase().includes("summary")
-      );
-
-      if (summaryInsight) {
-        const rawResult = summaryInsight.result || summaryInsight.content || "";
-        // The AI writes a structured block: Name: / Address: / Job Type: / etc.
-        const structuredMatch = rawResult.match(/Name:[\s\S]*?(?=\n\n|\n---|\n===|$)/);
-        const summary = structuredMatch
-          ? structuredMatch[0].trim()
-          : rawResult.slice(-800).trim() || "No summary extracted.";
-        return { callerNumber, summary };
-      }
-
-      // Fallback: all insight results
-      const allResults = insights
-        .map((i) => `[${i.name || i.type || "Insight"}]: ${i.result || i.content || ""}`)
-        .join("\n");
-      return {
-        callerNumber,
-        summary: allResults || "Call completed — no summary in insights."
-      };
+    // ── 1. AI insight results (the only event that texts Chris) ──────────────
+    const insight = extractInsight(body);
+    if (!insight) {
+      // TeXML status callbacks (initiated/ringing/answered/completed) and anything
+      // else: log only. Texting on these caused 4 duplicate texts per call.
+      return res.status(200).json({ ok: true, action: "ignored", eventType });
     }
 
-    // ── Format 2: Telnyx TeXML status_callback ────────────────────────────
-    // { CallStatus: "completed", From: "+1...", CallDuration: "45", ... }
-    if (payload?.CallStatus || payload?.From) {
-      const callerNumber = payload.From || "Unknown";
-      const status = payload.CallStatus || "completed";
-      const duration = payload.CallDuration ? `${payload.CallDuration}s` : "unknown";
-      return {
-        callerNumber,
-        summary: `Call ${status} (${duration}). AI summary will follow separately once insights process.`
-      };
+    const allowed = process.env.ALLOWED_CONNECTION_ID;
+    if (allowed && insight.connectionId && String(insight.connectionId) !== String(allowed)) {
+      console.log("Ignoring insight from other connection:", insight.connectionId);
+      return res.status(200).json({ ok: true, action: "ignored-other-connection" });
     }
 
-    // ── Format 3: Legacy / generic fallback ──────────────────────────────
-    const callerNumber =
-      payload?.data?.payload?.from ||
-      payload?.data?.payload?.caller_id ||
-      payload?.from ||
-      "Unknown";
-    const transcript =
-      payload?.data?.payload?.conversation_transcript ||
-      payload?.data?.payload?.transcript ||
-      "";
-    const summaryMatch = transcript.match(/Name:[\s\S]*?(?=\n\n|$)/);
-    const summary = summaryMatch
-      ? summaryMatch[0].trim()
-      : transcript.slice(-500) || JSON.stringify(payload).slice(0, 500);
-    return { callerNumber, summary };
+    const callerNumber = insight.callerNumber || (await lookupCaller(insight)) || "Unknown";
+    const smsText = buildSms(callerNumber, insight.text);
 
+    const sent = await sendSMS(process.env.CHRIS_NUMBER, process.env.FROM_NUMBER, smsText);
+    console.log("SMS queued to Chris:", sent?.data?.id, "caller:", callerNumber);
+    return res.status(200).json({ ok: true, action: "sms-sent", messageId: sent?.data?.id });
   } catch (err) {
-    console.error("parseLeadSummary error:", err);
+    // Still 200 so Telnyx doesn't hammer retries; the error is in Vercel logs.
+    console.error("Lead handler error:", err?.message || err);
+    return res.status(200).json({ ok: false, error: String(err?.message || err) });
+  }
+}
+
+// ─── Parse the insight webhook ────────────────────────────────────────────────
+function extractInsight(body) {
+  const data = body?.data || {};
+  const p = data?.payload || {};
+
+  // Current Telnyx format: call.conversation_insights.generated
+  // { data: { event_type, payload: { call_control_id, connection_id, results: [{ insight_id, result }] } } }
+  if (Array.isArray(p.results) && p.results.length) {
     return {
-      callerNumber: "Unknown",
-      summary: "Could not parse call data. Check Vercel logs for raw payload."
+      text: p.results.map((r) => (r.result || "").trim()).filter(Boolean).join("\n\n"),
+      callControlId: p.call_control_id,
+      callLegId: p.call_leg_id,
+      connectionId: p.connection_id,
+      callerNumber: p.from || p.caller_id || null,
     };
   }
+
+  // Older/alternate shape: { data: { insights: [...], conversation: {...} } }
+  const insights = data.insights || body.insights;
+  if (Array.isArray(insights) && insights.length) {
+    return {
+      text: insights.map((i) => (i.result || i.content || "").trim()).filter(Boolean).join("\n\n"),
+      callerNumber: data?.conversation?.from || data?.conversation?.metadata?.from || null,
+      callControlId: data?.conversation?.metadata?.call_control_id,
+    };
+  }
+  return null;
+}
+
+// ─── Find the caller's number from the Telnyx AI conversation record ─────────
+async function lookupCaller({ callControlId, callLegId }) {
+  const filters = [];
+  if (callControlId) filters.push(`metadata->call_control_id=eq.${encodeURIComponent(callControlId)}`);
+  if (callLegId) filters.push(`metadata->call_leg_id=eq.${encodeURIComponent(callLegId)}`);
+  for (const f of filters) {
+    try {
+      const r = await fetch(`${TELNYX}/ai/conversations?${f}&limit=1`, {
+        headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` },
+      });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const from = j?.data?.[0]?.metadata?.from;
+      if (from) return from;
+    } catch (e) {
+      console.error("Caller lookup failed:", e?.message || e);
+    }
+  }
+  return null;
+}
+
+// ─── SMS body ─────────────────────────────────────────────────────────────────
+function buildSms(callerNumber, text) {
+  const clean = (text || "No summary generated.").trim().slice(0, 1200);
+  const noInfo = /Name:\s*Not given/i.test(clean) && /Address:\s*Not given/i.test(clean);
+  const header = /URGENT/i.test(clean) ? "🚨 URGENT ROOFING LEAD" : noInfo ? "📞 MISSED / SHORT CALL" : "🏠 NEW ROOFING LEAD";
+  return `${header}\nCaller ID: ${formatPhone(callerNumber)}\n\n${clean}\n\n— Alex, Arkansas Local Roofing AI`;
+}
+
+function formatPhone(n) {
+  const d = String(n || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+  return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : n || "Unknown";
+}
+
+// ─── Telnyx SMS API ────────────────────────────────────────────────────────────
+async function sendSMS(to, from, text) {
+  if (!to || !from || !process.env.TELNYX_API_KEY) {
+    throw new Error("Missing env var: CHRIS_NUMBER, FROM_NUMBER, or TELNYX_API_KEY");
+  }
+  const r = await fetch(`${TELNYX}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.TELNYX_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ from, to, text }),
+  });
+  if (!r.ok) throw new Error(`Telnyx SMS failed (${r.status}): ${await r.text()}`);
+  return r.json();
 }
