@@ -16,10 +16,14 @@
 //   ALERT_EMAIL      default ARlocalroofing@gmail.com (comma-separate for more)
 //   ALLOWED_CONNECTION_ID (optional) ignore events from other Telnyx apps
 //   EMAIL_DRY_RUN    (optional, "1") log the email instead of sending
+//   ALERT_ON_INSIGHT_WEBHOOK (optional, "1") alert on direct insight webhooks instead
 
 import nodemailer from "nodemailer";
 
 const TELNYX = "https://api.telnyx.com/v2";
+
+// Insight polling can take ~40s; allow the function time to finish.
+export const config = { maxDuration: 60 };
 
 export default async function handler(req, res) {
   if (req.method === "GET") {
@@ -34,15 +38,25 @@ export default async function handler(req, res) {
     body?.data?.event_type || body?.event_type || (body?.CallStatus ? `texml.${body.CallStatus}` : "unknown");
   console.log("Webhook received:", eventType, JSON.stringify(body).slice(0, 1500));
 
-  const insight = extractInsight(body);
+  // PRIMARY TRIGGER: the TeXML "conversation_ended" callback (form-encoded, always delivered).
+  // It carries the ConversationId; we then pull the lead-capture insight from the Telnyx API.
+  // (The insight-group webhook proved unreliable for TeXML calls, so it is NOT used to alert —
+  //  set ALERT_ON_INSIGHT_WEBHOOK=1 only if you disable this path, or leads will double-alert.)
+  let insight = null;
+  if (body.CallStatus === "conversation_ended" && body.ConversationId) {
+    insight = await insightFromConversation(body.ConversationId, body.Messages);
+  } else if (process.env.ALERT_ON_INSIGHT_WEBHOOK === "1") {
+    insight = extractInsight(body);
+  }
   if (!insight) {
-    // TeXML status callbacks and anything else: log only (prevents duplicate alerts).
+    // Other call-status callbacks (completed, recording, etc.): log only.
     return res.status(200).json({ ok: true, action: "ignored", eventType });
   }
 
   const allowed = process.env.ALLOWED_CONNECTION_ID;
-  if (allowed && insight.connectionId && String(insight.connectionId) !== String(allowed)) {
-    console.log("Ignoring insight from other connection:", insight.connectionId);
+  const connId = insight.connectionId || body.ConnectionId;
+  if (allowed && connId && String(connId) !== String(allowed)) {
+    console.log("Ignoring event from other connection:", connId);
     return res.status(200).json({ ok: true, action: "ignored-other-connection" });
   }
 
@@ -67,7 +81,58 @@ export default async function handler(req, res) {
   return res.status(200).json(result);
 }
 
-// ─── Parse the insight webhook ────────────────────────────────────────────────
+// ─── Pull the lead insight for a finished conversation ────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function insightFromConversation(conversationId, messagesJson) {
+  const auth = { headers: { Authorization: `Bearer ${process.env.TELNYX_API_KEY}` } };
+  const id = encodeURIComponent(conversationId);
+
+  // Caller number from the conversation record
+  let callerNumber = null;
+  try {
+    const r = await fetch(`${TELNYX}/ai/conversations?id=eq.${id}&limit=1`, auth);
+    if (r.ok) callerNumber = (await r.json())?.data?.[0]?.metadata?.from || null;
+  } catch (e) {
+    console.error("Conversation lookup failed:", e?.message || e);
+  }
+
+  // Insights finish a few seconds after the call ends — poll for up to ~40s.
+  for (let i = 0; i < 14; i++) {
+    try {
+      const r = await fetch(`${TELNYX}/ai/conversations/${id}/conversations-insights`, auth);
+      if (r.ok) {
+        const done = ((await r.json())?.data || []).filter((d) => d.status === "completed");
+        const text = done
+          .flatMap((d) => d.conversation_insights || [])
+          .map((x) => (x.result || "").trim())
+          .filter(Boolean)
+          .join("\n\n");
+        if (text) return { text, callerNumber };
+      }
+    } catch (e) {
+      console.error("Insight fetch failed:", e?.message || e);
+    }
+    await sleep(3000);
+  }
+
+  // Fallback: no insight yet — still alert Chris with the tail of the transcript.
+  let transcript = "";
+  try {
+    transcript = JSON.parse(messagesJson || "[]")
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => `${m.role === "user" ? "Caller" : "Alex"}: ${m.content}`)
+      .join("\n")
+      .slice(-900);
+  } catch {}
+  console.log("No insight after polling; sending transcript fallback");
+  return {
+    text: `Notes: Lead summary was not ready — call transcript excerpt below.\n\n${transcript || "(no transcript)"}`,
+    callerNumber,
+  };
+}
+
+// ─── Parse a direct insight webhook (only used with ALERT_ON_INSIGHT_WEBHOOK=1) ─
 function extractInsight(body) {
   const data = body?.data || {};
   const p = data?.payload || {};
@@ -107,9 +172,11 @@ function parseLead(text) {
 
 function leadHeader(text, lead) {
   const noInfo = /not given/i.test(lead.Name || "") && /not given/i.test(lead.Address || "");
-  if (/URGENT/i.test(lead.Urgency || text || "")) return "🚨 URGENT ROOFING LEAD";
+  // "Non-urgent" contains the word "urgent" — only match when Urgency STARTS with urgent.
+  const urgent = lead.Urgency ? /^\s*urgent/i.test(lead.Urgency) : /Urgency:\s*urgent/i.test(text || "");
+  if (urgent) return "🚨 URGENT LEAD";
   if (noInfo) return "📞 MISSED / SHORT CALL";
-  return "🏠 NEW ROOFING LEAD";
+  return "🏠 NEW LEAD";
 }
 
 // ─── Caller number from the Telnyx AI conversation record ─────────────────────
