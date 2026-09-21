@@ -1,4 +1,4 @@
-// Arkansas Local Roofing — AI Receptionist Lead Alerts
+// Local Roofing & Construction — AI Receptionist Lead Alerts
 // Vercel Serverless Function — /api/lead
 //
 // Flow: caller → Alex (Telnyx AI assistant) → call ends → Telnyx runs the
@@ -27,7 +27,7 @@ export const config = { maxDuration: 60 };
 
 export default async function handler(req, res) {
   if (req.method === "GET") {
-    return res.status(200).send("Arkansas Local Roofing — Lead alerts active ✅");
+    return res.status(200).send("Local Roofing & Construction — Lead alerts active ✅");
   }
   if (req.method !== "POST") {
     return res.status(405).send("Method not allowed");
@@ -234,9 +234,9 @@ async function sendEmail(header, callerNumber, lead, rawText) {
   <p style="margin:0 0 16px"><a href="tel:${esc(tel)}" style="display:inline-block;background:#c0392b;color:#fff;
      padding:12px 18px;border-radius:6px;text-decoration:none;font-weight:700">📞 Call back ${esc(formatPhone(callerNumber))}</a></p>
   ${rows ? `<table style="border-collapse:collapse;font-size:15px">${rows}</table>` : `<pre style="white-space:pre-wrap">${esc(rawText)}</pre>`}
-  <p style="margin:24px 0 0;font-size:12px;color:#888">Arkansas Local Roofing &amp; Construction · AI answering service by The Watson Factor</p>
+  <p style="margin:24px 0 0;font-size:12px;color:#888">Local Roofing &amp; Construction · AI answering service by The Watson Factor</p>
 </div>`;
-  const text = `${header}\nCaller ID: ${formatPhone(callerNumber)}\n\n${rawText}\n\n— Alex, Arkansas Local Roofing AI`;
+  const text = `${header}\nCaller ID: ${formatPhone(callerNumber)}\n\n${rawText}\n\n— Alex, Local Roofing & Construction AI`;
 
   const transport = dryRun
     ? nodemailer.createTransport({ jsonTransport: true })
@@ -262,7 +262,7 @@ async function sendEmail(header, callerNumber, lead, rawText) {
 // ─── SMS via Telnyx (starts delivering once 10DLC is approved) ────────────────
 function buildSms(header, callerNumber, text) {
   const clean = (text || "No summary generated.").trim().slice(0, 1200);
-  return `${header}\nCaller ID: ${formatPhone(callerNumber)}\n\n${clean}\n\n— Alex, Arkansas Local Roofing AI`;
+  return `${header}\nCaller ID: ${formatPhone(callerNumber)}\n\n${clean}\n\n— Alex, Local Roofing & Construction AI`;
 }
 
 async function sendSMS(to, from, text) {
