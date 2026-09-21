@@ -1,6 +1,8 @@
 {
   "name": "arkansas-roofing-lead-sms",
-  "version": "1.0.0",
-  "description": "Arkansas Local Roofing — Telnyx AI call → SMS lead notifier",
-  "type": "module"
+  "version": "1.1.0",
+  "type": "module",
+  "dependencies": {
+    "nodemailer": "^6.9.16"
+  }
 }
