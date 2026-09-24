@@ -261,8 +261,10 @@ async function sendEmail(header, callerNumber, lead, rawText) {
 
 // ─── SMS via Telnyx (starts delivering once 10DLC is approved) ────────────────
 function buildSms(header, callerNumber, text) {
-  const clean = (text || "No summary generated.").trim().slice(0, 1200);
-  return `${header}\nCaller ID: ${formatPhone(callerNumber)}\n\n${clean}\n\n— Alex, Local Roofing & Construction AI`;
+  // Brand name first + HELP/STOP footer: matches the registered 10DLC samples.
+  const clean = (text || "No summary generated.").trim().slice(0, 1000);
+  const label = header.replace(/[^A-Za-z ]/g, "").trim(); // URGENT LEAD / NEW LEAD / MISSED  SHORT CALL
+  return `Local Roofing & Construction - ${label}\nCaller ID: ${formatPhone(callerNumber)}\n\n${clean}\n\nReply HELP for help, STOP to opt out.`;
 }
 
 async function sendSMS(to, from, text) {
