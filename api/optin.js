@@ -1,4 +1,4 @@
-// Local Roofing & Construction — SMS lead-alert opt-in recorder
+// Local Roofing & Construction — SMS call-alert opt-in recorder
 // Vercel Serverless Function — /api/optin
 //
 // Receives the signed enrollment form from arkansaslocalroofing.com/sms-consent,
@@ -14,12 +14,12 @@ const ALLOWED_ORIGINS = [
 ];
 
 const CONFIRMATION_TEXT =
-  "Local Roofing & Construction: You are enrolled in new-lead alerts from your AI receptionist. " +
+  "Local Roofing & Construction: You are enrolled in call alerts from your AI receptionist. " +
   "Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out.";
 
 const CONSENT_LANGUAGE =
   "By checking this box and signing below, I agree to receive automated text messages from " +
-  "Local Roofing & Construction at the mobile number above with new-lead notifications from our " +
+  "Local Roofing & Construction at the mobile number above with call alert notifications from our " +
   "AI answering service (caller name, address, job type, urgency, and callback number). Message " +
   "frequency varies with call volume. Message and data rates may apply. Reply HELP for help or " +
   "STOP to opt out at any time. Consent is not a condition of purchase.";
@@ -87,7 +87,7 @@ async function emailRecord(r, signatureDataUrl) {
   if (!process.env.SMTP_PASS && !dryRun) throw new Error("SMTP_PASS not set");
 
   const text = [
-    "SMS LEAD-ALERT CONSENT RECORD — keep for carrier (10DLC) compliance",
+    "SMS CALL-ALERT CONSENT RECORD — keep for carrier (10DLC) compliance",
     "",
     `Name: ${r.name}`,
     `Mobile number: ${r.phone}`,
