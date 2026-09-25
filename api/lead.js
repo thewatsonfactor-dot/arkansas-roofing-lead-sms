@@ -27,7 +27,7 @@ export const config = { maxDuration: 60 };
 
 export default async function handler(req, res) {
   if (req.method === "GET") {
-    return res.status(200).send("Local Roofing & Construction — Lead alerts active ✅");
+    return res.status(200).send("Local Roofing & Construction — Call alerts active ✅");
   }
   if (req.method !== "POST") {
     return res.status(405).send("Method not allowed");
@@ -174,9 +174,9 @@ function leadHeader(text, lead) {
   const noInfo = /not given/i.test(lead.Name || "") && /not given/i.test(lead.Address || "");
   // "Non-urgent" contains the word "urgent" — only match when Urgency STARTS with urgent.
   const urgent = lead.Urgency ? /^\s*urgent/i.test(lead.Urgency) : /Urgency:\s*urgent/i.test(text || "");
-  if (urgent) return "🚨 URGENT LEAD";
+  if (urgent) return "🚨 URGENT CALL ALERT";
   if (noInfo) return "📞 MISSED / SHORT CALL";
-  return "🏠 NEW LEAD";
+  return "🏠 NEW CALL ALERT";
 }
 
 // ─── Caller number from the Telnyx AI conversation record ─────────────────────
@@ -263,7 +263,7 @@ async function sendEmail(header, callerNumber, lead, rawText) {
 function buildSms(header, callerNumber, text) {
   // Brand name first + HELP/STOP footer: matches the registered 10DLC samples.
   const clean = (text || "No summary generated.").trim().slice(0, 1000);
-  const label = header.replace(/[^A-Za-z ]/g, "").trim(); // URGENT LEAD / NEW LEAD / MISSED  SHORT CALL
+  const label = header.replace(/[^A-Za-z ]/g, "").trim(); // URGENT CALL ALERT / NEW CALL ALERT / MISSED  SHORT CALL
   return `Local Roofing & Construction - ${label}\nCaller ID: ${formatPhone(callerNumber)}\n\n${clean}\n\nReply HELP for help, STOP to opt out.`;
 }
 
